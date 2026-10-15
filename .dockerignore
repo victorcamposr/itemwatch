@@ -1,0 +1,6 @@
+.git
+.github
+*.exe
+*.test
+.env
+.env.*

@@ -1,0 +1,9 @@
+/itemwatch
+/ledgersim
+*.exe
+*.test
+*.out
+coverage.*
+.env
+.env.*
+!.env.example

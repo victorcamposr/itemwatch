@@ -1,0 +1,51 @@
+# Local demo: MariaDB with a minimal game schema, Redis, itemwatch, and a
+# simulator writing synthetic ledger traffic with periodic anomalies.
+#
+#   docker compose up --build
+#   curl -H "Authorization: Bearer demo-token" localhost:8080/v1/alerts
+#
+# Set DISCORD_WEBHOOK_URL in your shell to also receive the alerts on Discord.
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: itemwatch
+      MARIADB_DATABASE: game
+    volumes:
+      - ./testdata/game_schema.sql:/docker-entrypoint-initdb.d/10-game.sql:ro
+      - ./testdata/state_db.sql:/docker-entrypoint-initdb.d/20-state.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+
+  itemwatch:
+    build: .
+    environment:
+      ITEMWATCH_GAME_DSN: root:itemwatch@tcp(db:3306)/game
+      ITEMWATCH_STATE_DSN: root:itemwatch@tcp(db:3306)/itemwatch
+      ITEMWATCH_REDIS_URL: redis://redis:6379/0
+      ITEMWATCH_API_TOKEN: demo-token
+      ITEMWATCH_LOG_LEVEL: info
+      # Short delays so the demo shows results within minutes.
+      ITEMWATCH_DUPE_SCAN_INTERVAL: 20s
+      ITEMWATCH_DUPE_CONFIRM_AFTER: 40s
+      ITEMWATCH_SPIKE_WARMUP: "10"
+      ITEMWATCH_DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  ledgersim:
+    build: .
+    healthcheck:
+      disable: true
+    entrypoint: ["/usr/local/bin/ledgersim", "-dsn", "root:itemwatch@tcp(db:3306)/game", "-anomaly-every", "90s"]
+    depends_on:
+      db: { condition: service_healthy }
