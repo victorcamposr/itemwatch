@@ -136,9 +136,11 @@ func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
 			if errors.Is(err, errUncommitted) {
 				// The rules already saw this batch in memory: rewind them to the
 				// checkpoint so the retry does not count it twice.
-				if cursor, err = w.restore(ctx); err != nil {
-					return err
+				restored, ok := w.rewind(ctx)
+				if !ok {
+					break
 				}
+				cursor = restored
 			}
 			continue
 		}
@@ -148,6 +150,23 @@ func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
 		}
 	}
 	return nil
+}
+
+// rewind restores the checkpoint, waiting for as long as the state database
+// is out. Returning an error here would stop the whole process for an outage
+// the leader lock already handles. ok is false when ctx ended first.
+func (w *Watcher) rewind(ctx context.Context) (uint64, bool) {
+	for {
+		cursor, err := w.restore(ctx)
+		if err == nil {
+			return cursor, true
+		}
+		if ctx.Err() != nil {
+			return 0, false
+		}
+		w.Log.Error("restore checkpoint failed", "err", err)
+		sleep(ctx, 5*time.Second)
+	}
 }
 
 // Step processes one batch after cursor and returns the new cursor and the
