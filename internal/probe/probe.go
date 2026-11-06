@@ -248,7 +248,7 @@ func (r *Runner) apply(ctx context.Context, name string, res result) {
 		if st.failingSince.IsZero() {
 			st.failingSince = now
 		}
-		st.lastError = clip(res.err.Error())
+		st.lastError, st.facts = clip(res.err.Error()), nil
 		st.incident = Incident{Check: name, Since: st.failingSince, Error: st.lastError}
 	}
 	r.mu.Unlock()

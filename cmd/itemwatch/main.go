@@ -58,6 +58,7 @@ func main() {
 }
 
 func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
+	started := time.Now().UTC()
 	gameDB, err := openDB(ctx, cfg.GameDSN, 4)
 	if err != nil {
 		return fmt.Errorf("game database: %w", err)
@@ -137,6 +138,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 					return fmt.Errorf("game database: %w", err)
 				}
 				return rdb.Ping(ctx).Err()
+			},
+			Runtime: &api.Runtime{
+				Version: version, StartedAt: started,
+				Leader:  leader.Load,
+				Watcher: w.State,
+				Cursor:  func(ctx context.Context) (uint64, error) { return st.Cursor(ctx, watcher.CheckpointName) },
+				Head:    reader.MaxID,
+				Queue: func(ctx context.Context) (int64, int64) {
+					return queue.Depth(ctx, rdb, cfg.Stream, cfg.Group, cfg.DeadLetter)
+				},
+				Probes: probes.Snapshot,
 			},
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

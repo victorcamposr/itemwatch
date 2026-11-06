@@ -110,6 +110,9 @@ func TestOKThenFailThenRecover(t *testing.T) {
 	if s.OK || s.FailingSince == nil || !s.FailingSince.Equal(start) || s.LastError != "connection refused" {
 		t.Fatalf("first failure: %+v", s)
 	}
+	if s.Facts != nil {
+		t.Fatalf("facts of the last success kept: %+v", s)
+	}
 
 	// A planned restart: still inside FailAfter, nothing is raised.
 	r.tick(4 * time.Minute)

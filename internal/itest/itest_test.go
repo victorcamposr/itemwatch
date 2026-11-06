@@ -442,6 +442,34 @@ func TestQuietProbeAlertIsNotPublished(t *testing.T) {
 	}
 }
 
+func TestQueueDepth(t *testing.T) {
+	ctx := context.Background()
+	setup(t)
+	if pending, dead := queue.Depth(ctx, rdb, "itemwatch:alerts", "notifiers", "itemwatch:dead"); pending != 0 || dead != 0 {
+		t.Fatalf("empty: pending %d, dead %d", pending, dead)
+	}
+	publisher := queue.NewPublisher(rdb, "itemwatch:alerts", 1000)
+	for range 3 {
+		if _, err := publisher.Publish(ctx, queue.Notification{AlertID: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rdb.XGroupCreate(ctx, "itemwatch:alerts", "notifiers", "0").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group: "notifiers", Consumer: "c", Streams: []string{"itemwatch:alerts", ">"}, Count: 1,
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.XAdd(ctx, &redis.XAddArgs{Stream: "itemwatch:dead", Values: map[string]any{"a": 1}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if pending, dead := queue.Depth(ctx, rdb, "itemwatch:alerts", "notifiers", "itemwatch:dead"); pending != 3 || dead != 1 {
+		t.Fatalf("pending %d, dead %d", pending, dead)
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	ctx := context.Background()
 	f := setup(t)

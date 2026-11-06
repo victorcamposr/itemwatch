@@ -34,6 +34,7 @@ type Server struct {
 	Token      string // bearer token for /v1; empty disables auth
 	Checkpoint string
 	Ready      func(ctx context.Context) error
+	Runtime    *Runtime // serves /v1/status; nil leaves the route out
 	Gatherer   prometheus.Gatherer
 	Log        *slog.Logger
 }
@@ -51,6 +52,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/alerts/{id}/resolve", s.auth(s.resolve))
 	mux.Handle("POST /v1/alerts/{id}/reopen", s.auth(s.reopen))
 	mux.Handle("GET /v1/stats", s.auth(s.stats))
+	if s.Runtime != nil {
+		mux.Handle("GET /v1/status", s.auth(s.status))
+	}
 	return s.logRequests(mux)
 }
 

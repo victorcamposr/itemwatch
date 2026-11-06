@@ -362,6 +362,16 @@ func (s *Store) Heartbeat(ctx context.Context, name string) error {
 	return err
 }
 
+// Cursor returns the saved ledger position, or 0 if there is no checkpoint yet.
+func (s *Store) Cursor(ctx context.Context, name string) (uint64, error) {
+	var cursor uint64
+	err := s.db.QueryRowContext(ctx, "SELECT cursor_id FROM checkpoints WHERE name = ?", name).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return cursor, err
+}
+
 // Stats summarizes the open alerts and the processing position.
 type Stats struct {
 	Open       map[string]int64 `json:"open"`

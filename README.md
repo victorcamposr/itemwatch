@@ -135,6 +135,7 @@ All `/v1` routes require `Authorization: Bearer <ITEMWATCH_API_TOKEN>`.
 | `POST` | `/v1/alerts/{id}/resolve` | body `{"by": "staff name", "note": "..."}`; `409` if not open |
 | `POST` | `/v1/alerts/{id}/reopen` | `409` if not resolved |
 | `GET` | `/v1/stats` | open alerts per severity and checkpoint position |
+| `GET` | `/v1/status` | whether the service itself is healthy: leader, ledger lag, queue and health checks |
 | `GET` | `/healthz`, `/readyz` | liveness, and readiness (both databases and Redis) |
 | `GET` | `/metrics` | Prometheus |
 
@@ -157,6 +158,38 @@ All `/v1` routes require `Authorization: Bearer <ITEMWATCH_API_TOKEN>`.
   "generation": 0
 }
 ```
+
+`/v1/status` is what to read when something looks wrong, so it answers `200` even when a dependency is down. Every
+dependency has two seconds and fails alone: a number it should have provided turns to `-1`.
+
+```json
+{
+  "version": "1.4.0",
+  "started_at": "2026-10-15T11:00:00Z",
+  "leader": true,
+  "ledger": {"cursor": 90412, "head": 90415, "lag": 3, "last_read_at": "2026-10-15T15:20:01Z"},
+  "dupe_scan": {"enabled": true, "last_at": "2026-10-15T15:19:00Z"},
+  "queue": {"pending": 0, "dead_letter": 0},
+  "probes": [
+    {
+      "name": "ot-status", "ok": true, "failing_since": null, "last_ok_at": "2026-10-15T15:20:00Z",
+      "last_error": "", "ms": 4, "alert": "none", "facts": {"players_online": 12, "uptime_seconds": 6286}
+    }
+  ]
+}
+```
+
+| Field | |
+|---|---|
+| `ledger.cursor` | live on the leader, the saved checkpoint on other replicas; `-1` if that read failed |
+| `ledger.head` | `MAX(id)` of the ledger; `-1` if the game database did not answer |
+| `ledger.lag` | `head - cursor`, `-1` if either is unknown |
+| `ledger.last_read_at` | last successful poll, even if it found no rows; `null` on a replica that never led |
+| `dupe_scan.last_at` | last completed scan on this replica; `null` on a replica that never led |
+| `queue.pending` | notifications the consumer group has not finished, `0` with no channel configured, `-1` if Redis is down |
+| `queue.dead_letter` | entries in the dead-letter stream, `-1` if Redis is down |
+| `probes` | checks run by this replica, so usually empty unless `leader` is true |
+| `probes[].alert` | `none`, `stored` (normal path), `direct` (announced, row pending) or `undelivered` (nobody heard: only the log and this field know) |
 
 ## Metrics
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -55,6 +56,40 @@ type Watcher struct {
 	Direct       []dispatch.Notifier // channels for what cannot wait for the queue
 
 	publishMu sync.Mutex
+
+	// What /v1/status reads while the loops run.
+	tailing  atomic.Bool
+	cursor   atomic.Uint64
+	lastRead atomic.Int64 // unix milliseconds, 0 before the first read
+	lastDupe atomic.Int64 // unix milliseconds, 0 before the first scan
+}
+
+// State is a snapshot of the running watcher, safe to take from any goroutine.
+type State struct {
+	Tailing    bool // this replica is reading the ledger, so Cursor is live
+	Cursor     uint64
+	LastReadAt *time.Time // last successful poll, even if it found nothing
+	DupeScan   bool
+	DupeScanAt *time.Time // last scan that completed
+}
+
+// State returns the current state.
+func (w *Watcher) State() State {
+	return State{
+		Tailing:    w.tailing.Load(),
+		Cursor:     w.cursor.Load(),
+		LastReadAt: fromMillis(w.lastRead.Load()),
+		DupeScan:   w.Dupes != nil,
+		DupeScanAt: fromMillis(w.lastDupe.Load()),
+	}
+}
+
+func fromMillis(ms int64) *time.Time {
+	if ms == 0 {
+		return nil
+	}
+	t := time.UnixMilli(ms).UTC()
+	return &t
 }
 
 // Run processes until ctx ends.
@@ -117,6 +152,10 @@ func (w *Watcher) restore(ctx context.Context) (uint64, error) {
 }
 
 func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
+	w.cursor.Store(cursor)
+	w.tailing.Store(true)
+	defer w.tailing.Store(false)
+
 	lagTick := time.NewTicker(15 * time.Second)
 	defer lagTick.Stop()
 	for ctx.Err() == nil {
@@ -143,10 +182,12 @@ func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
 					break
 				}
 				cursor = restored
+				w.cursor.Store(cursor)
 			}
 			continue
 		}
 		cursor = next
+		w.cursor.Store(cursor)
 		if n < w.BatchSize {
 			sleep(ctx, w.PollInterval)
 		}
@@ -178,8 +219,12 @@ func (w *Watcher) rewind(ctx context.Context) (uint64, bool) {
 func (w *Watcher) Step(ctx context.Context, cursor uint64) (uint64, int, error) {
 	start := time.Now()
 	events, err := w.Ledger.After(ctx, cursor, w.BatchSize)
-	if err != nil || len(events) == 0 {
+	if err != nil {
 		return cursor, 0, err
+	}
+	w.lastRead.Store(time.Now().UnixMilli())
+	if len(events) == 0 {
+		return cursor, 0, nil
 	}
 	var findings []detect.Finding
 	for _, ev := range events {
@@ -223,7 +268,9 @@ func (w *Watcher) scanDupes(ctx context.Context) error {
 	t := time.NewTicker(w.DupeInterval)
 	defer t.Stop()
 	for {
-		if err := w.ScanDupesOnce(ctx); err != nil && ctx.Err() == nil {
+		if err := w.ScanDupesOnce(ctx); err == nil {
+			w.lastDupe.Store(time.Now().UnixMilli())
+		} else if ctx.Err() == nil {
 			w.Log.Error("duplicate scan failed", "err", err)
 		}
 		select {

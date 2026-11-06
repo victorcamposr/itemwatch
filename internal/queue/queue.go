@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -82,4 +83,28 @@ func (p *Publisher) Publish(ctx context.Context, n Notification) (string, error)
 		return "", err
 	}
 	return p.rdb.XAdd(ctx, &redis.XAddArgs{Stream: p.stream, MaxLen: p.maxLen, Approx: true, Values: values}).Result()
+}
+
+// Depth reports what is left to deliver: entries the consumer group has not
+// finished (read but unacknowledged, plus not read yet) and entries in the
+// dead-letter stream. Either number is -1 if Redis did not answer. With no
+// consumer group, which means no notification channel, pending is 0: nobody
+// is expected to deliver anything.
+func Depth(ctx context.Context, rdb *redis.Client, stream, group, deadLetter string) (pending, dead int64) {
+	pending, dead = -1, -1
+	groups, err := rdb.XInfoGroups(ctx, stream).Result()
+	if err == nil {
+		pending = 0
+		for _, g := range groups {
+			if g.Name == group {
+				pending = g.Pending + max(g.Lag, 0)
+			}
+		}
+	} else if strings.Contains(err.Error(), "no such key") {
+		pending = 0 // nothing was ever published
+	}
+	if n, err := rdb.XLen(ctx, deadLetter).Result(); err == nil {
+		dead = n
+	}
+	return pending, dead
 }
