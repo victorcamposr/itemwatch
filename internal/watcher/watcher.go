@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/victorcamposr/itemwatch/internal/detect"
+	"github.com/victorcamposr/itemwatch/internal/dispatch"
 	"github.com/victorcamposr/itemwatch/internal/ledger"
 	"github.com/victorcamposr/itemwatch/internal/metrics"
 	"github.com/victorcamposr/itemwatch/internal/queue"
@@ -51,6 +52,7 @@ type Watcher struct {
 	StartLatest  bool // with no checkpoint, skip the history instead of replaying it
 	Log          *slog.Logger
 	Metrics      *metrics.Metrics
+	Direct       []dispatch.Notifier // channels for what cannot wait for the queue
 
 	publishMu sync.Mutex
 }

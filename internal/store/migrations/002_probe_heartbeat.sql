@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS probe_heartbeat (
+  name    VARCHAR(32)     NOT NULL,
+  beat_at DATETIME(3)     NOT NULL,
+  beats   BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

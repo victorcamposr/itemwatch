@@ -117,6 +117,7 @@ type NewAlert struct {
 	Origin     string
 	Count      int64
 	At         time.Time
+	Quiet      bool // store it as already published, so the queue never carries it
 }
 
 // upsertAlert folds a finding into its incident. A resolved incident that
@@ -157,6 +158,11 @@ func (s *Store) Commit(ctx context.Context, name string, cp *Checkpoint, alerts 
 			if _, err := stmt.ExecContext(ctx, a.DedupKey, a.Rule, a.Severity, truncate(a.Title, 255), string(details),
 				a.PlayerID, truncate(a.PlayerName, 64), a.ItemHash, truncate(a.Origin, 255), a.Count, a.At, a.At); err != nil {
 				return fmt.Errorf("upsert alert: %w", err)
+			}
+			if a.Quiet {
+				if _, err := tx.ExecContext(ctx, "UPDATE alerts SET published_at = ? WHERE dedup_key = ?", time.Now().UTC(), a.DedupKey); err != nil {
+					return fmt.Errorf("mark quiet alert: %w", err)
+				}
 			}
 		}
 	}
@@ -313,6 +319,18 @@ func (s *Store) Resolve(ctx context.Context, id int64, by, note string) (Alert, 
 	return s.afterTransition(ctx, id, res)
 }
 
+// ResolveByKey closes the open incident with this dedup key, if there is one.
+// It reports whether anything changed, so it is safe to call blindly.
+func (s *Store) ResolveByKey(ctx context.Context, key, by, note string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE alerts SET status = 'resolved', resolved_at = ?, resolved_by = ?, resolution_note = ?
+		WHERE dedup_key = ? AND status = 'open'`, time.Now().UTC(), truncate(by, 64), truncate(note, 500), key)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // Reopen puts a resolved alert back in the open list, without notifying again.
 func (s *Store) Reopen(ctx context.Context, id int64) (Alert, error) {
 	res, err := s.db.ExecContext(ctx, "UPDATE alerts SET status = 'open' WHERE id = ? AND status = 'resolved'", id)
@@ -335,6 +353,13 @@ func (s *Store) afterTransition(ctx context.Context, id int64, res sql.Result) (
 		return a, ErrConflict
 	}
 	return a, nil
+}
+
+// Heartbeat writes one row, to prove the database accepts writes.
+func (s *Store) Heartbeat(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO probe_heartbeat (name, beat_at) VALUES (?, ?)
+		ON DUPLICATE KEY UPDATE beat_at = VALUES(beat_at), beats = beats + 1`, name, time.Now().UTC())
+	return err
 }
 
 // Stats summarizes the open alerts and the processing position.

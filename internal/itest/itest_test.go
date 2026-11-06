@@ -27,6 +27,7 @@ import (
 	"github.com/victorcamposr/itemwatch/internal/dispatch"
 	"github.com/victorcamposr/itemwatch/internal/ledger"
 	"github.com/victorcamposr/itemwatch/internal/metrics"
+	"github.com/victorcamposr/itemwatch/internal/probe"
 	"github.com/victorcamposr/itemwatch/internal/queue"
 	"github.com/victorcamposr/itemwatch/internal/render"
 	"github.com/victorcamposr/itemwatch/internal/store"
@@ -358,6 +359,104 @@ func pendingCount(ctx context.Context) int64 {
 		return -1
 	}
 	return p.Count
+}
+
+func TestProbeAlertLifecycle(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	w := f.newWatcher(t)
+	queued := func() int64 { return rdb.XLen(ctx, "itemwatch:alerts").Val() }
+	inc := probe.Incident{Check: "ot-status", Since: time.Now().UTC().Add(-6 * time.Minute), Error: "connection refused"}
+
+	if err := w.ClearProbe(ctx, "ot-status"); err != nil {
+		t.Fatalf("clearing with nothing open: %v", err)
+	}
+	if err := w.RaiseProbe(ctx, inc); err != nil {
+		t.Fatal(err)
+	}
+	a := alertsByRule(t, f.store)["probe"]
+	if a.Status != "open" || a.Severity != 3 || a.Generation != 0 || a.Origin != "ot-status" || a.PublishedAt == nil {
+		t.Fatalf("raised alert: %+v", a)
+	}
+	if a.Title != "The game server is not answering status requests" {
+		t.Fatalf("title %q", a.Title)
+	}
+	if queued() != 1 {
+		t.Fatalf("queued %d", queued())
+	}
+
+	if err := w.ClearProbe(ctx, "ot-status"); err != nil {
+		t.Fatal(err)
+	}
+	a = alertsByRule(t, f.store)["probe"]
+	if a.Status != "resolved" || a.ResolvedBy != "probe" {
+		t.Fatalf("cleared alert: %+v", a)
+	}
+
+	if err := w.RaiseProbe(ctx, inc); err != nil {
+		t.Fatal(err)
+	}
+	a = alertsByRule(t, f.store)["probe"]
+	if a.Status != "open" || a.Generation != 1 {
+		t.Fatalf("reopened alert: %+v", a)
+	}
+	if queued() != 2 {
+		t.Fatalf("a reopen is announced again, queued %d", queued())
+	}
+
+	// A check that belongs to a different incident has its own row.
+	other := probe.Incident{Check: "db-write", Since: time.Now().UTC(), Error: "read only"}
+	if err := w.RaiseProbe(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	list, err := f.store.ListAlerts(ctx, store.Filter{Rule: "probe", Status: "open"})
+	if err != nil || len(list) != 2 {
+		t.Fatalf("open probe alerts: %d, %v", len(list), err)
+	}
+}
+
+// An alert already announced outside the queue is stored without a second
+// announcement, on the first write and on a reopen.
+func TestQuietProbeAlertIsNotPublished(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	w := f.newWatcher(t)
+	queued := func() int64 { return rdb.XLen(ctx, "itemwatch:alerts").Val() }
+	inc := probe.Incident{Check: "db-write", Since: time.Now().UTC(), Error: "read only", Quiet: true}
+
+	for generation := range 2 {
+		if err := w.RaiseProbe(ctx, inc); err != nil {
+			t.Fatal(err)
+		}
+		w.PublishPending(ctx)
+		a := alertsByRule(t, f.store)["probe"]
+		if a.Generation != generation || a.PublishedAt == nil {
+			t.Fatalf("generation %d: %+v", generation, a)
+		}
+		if queued() != 0 {
+			t.Fatalf("generation %d: queued %d", generation, queued())
+		}
+		if err := w.ClearProbe(ctx, inc.Check); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	for range 2 {
+		if err := f.store.Heartbeat(ctx, "db-write"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var beats int
+	if err := stateDB.QueryRow("SELECT beats FROM probe_heartbeat WHERE name = 'db-write'").Scan(&beats); err != nil {
+		t.Fatal(err)
+	}
+	if beats < 2 {
+		t.Fatalf("beats %d", beats)
+	}
 }
 
 func waitFor(t *testing.T, ctx context.Context, what string, cond func() bool) {

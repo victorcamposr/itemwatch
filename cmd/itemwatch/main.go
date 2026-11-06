@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/victorcamposr/itemwatch/internal/dispatch"
 	"github.com/victorcamposr/itemwatch/internal/ledger"
 	"github.com/victorcamposr/itemwatch/internal/metrics"
+	"github.com/victorcamposr/itemwatch/internal/probe"
 	"github.com/victorcamposr/itemwatch/internal/queue"
 	"github.com/victorcamposr/itemwatch/internal/store"
 	"github.com/victorcamposr/itemwatch/internal/watcher"
@@ -92,6 +94,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if cfg.StaffRule {
 		rules = append(rules, detect.StaffCreation{})
 	}
+	var notifiers []dispatch.Notifier
+	if cfg.DiscordWebhook != "" {
+		notifiers = append(notifiers, &dispatch.Discord{URL: cfg.DiscordWebhook, Min: cfg.DiscordMin, Lang: cfg.Lang})
+	} else {
+		log.Warn("no notification channel configured; alerts are only available through the API")
+	}
+
 	w := &watcher.Watcher{
 		Ledger:       reader,
 		Store:        st,
@@ -104,17 +113,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		StartLatest:  cfg.StartLatest,
 		Log:          log,
 		Metrics:      m,
+		Direct:       notifiers,
 	}
 	if cfg.DupeScan {
 		w.Dupes = detect.NewDupeTracker(cfg.DupeConfirm)
 	}
 
-	var notifiers []dispatch.Notifier
-	if cfg.DiscordWebhook != "" {
-		notifiers = append(notifiers, &dispatch.Discord{URL: cfg.DiscordWebhook, Min: cfg.DiscordMin, Lang: cfg.Lang})
-	} else {
-		log.Warn("no notification channel configured; alerts are only available through the API")
-	}
+	var leader atomic.Bool
+	probes := probe.New(probe.Config{
+		Checks: probeChecks(cfg, st), Alerts: w, Interval: cfg.ProbeInterval, FailAfter: cfg.ProbeFailAfter, Log: log,
+		Active: func(ctx context.Context) bool { return leader.Load() || st.Ping(ctx) != nil },
+	})
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,
@@ -154,17 +163,38 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			}, notifiers, log, m).Run(ctx)
 		})
 	}
+	g.Go(func() error { return probes.Run(ctx) })
 	g.Go(func() error {
-		return st.RunAsLeader(ctx, "itemwatch:ledger", 10*time.Second, func(leader bool) {
-			if leader {
+		return st.RunAsLeader(ctx, "itemwatch:ledger", 10*time.Second, func(isLeader bool) {
+			leader.Store(isLeader)
+			if isLeader {
 				m.Leader.Set(1)
 				log.Info("leader lock acquired")
+				probes.Wake()
 			} else {
 				m.Leader.Set(0)
 			}
 		}, w.Run)
 	})
 	return g.Wait()
+}
+
+// probeChecks builds the checks that are configured.
+func probeChecks(cfg config.Config, st *store.Store) []probe.Check {
+	var checks []probe.Check
+	if cfg.ProbeStatusAddr != "" {
+		checks = append(checks, probe.OTStatus{Addr: cfg.ProbeStatusAddr})
+	}
+	if cfg.ProbeLoginURL != "" {
+		checks = append(checks, probe.HTTPLogin{
+			URL: cfg.ProbeLoginURL, Email: cfg.ProbeLoginEmail, Password: cfg.ProbeLoginPassword,
+			Client: probe.NewLoginClient(),
+		})
+	}
+	if cfg.ProbeDBWrite {
+		checks = append(checks, probe.DBWrite{DB: st})
+	}
+	return checks
 }
 
 func openDB(ctx context.Context, dsn string, maxOpen int) (*sql.DB, error) {

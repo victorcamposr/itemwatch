@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -42,6 +44,15 @@ type Config struct {
 
 	DiscordWebhook string
 	DiscordMin     detect.Severity
+
+	// Every probe is off until configured.
+	ProbeStatusAddr    string
+	ProbeLoginURL      string
+	ProbeLoginEmail    string
+	ProbeLoginPassword string
+	ProbeDBWrite       bool
+	ProbeInterval      time.Duration
+	ProbeFailAfter     time.Duration
 
 	Stream     string
 	DeadLetter string
@@ -117,6 +128,14 @@ func Load() (Config, error) {
 		DeadLetter:     get("DEAD_LETTER_STREAM", "itemwatch:alerts:dead"),
 		Group:          get("CONSUMER_GROUP", "notifiers"),
 		Consumer:       get("CONSUMER_NAME", host),
+
+		ProbeStatusAddr:    get("PROBE_STATUS_ADDR", ""),
+		ProbeLoginURL:      get("PROBE_LOGIN_URL", ""),
+		ProbeLoginEmail:    get("PROBE_LOGIN_EMAIL", ""),
+		ProbeLoginPassword: get("PROBE_LOGIN_PASSWORD", ""),
+		ProbeDBWrite:       boolean("PROBE_DB_WRITE", false),
+		ProbeInterval:      duration("PROBE_INTERVAL", "30s"),
+		ProbeFailAfter:     duration("PROBE_FAIL_AFTER", "5m"),
 	}
 	c.Spike = detect.SpikeConfig{
 		Bucket:    duration("SPIKE_BUCKET", "1m"),
@@ -141,6 +160,8 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ITEMWATCH_DISCORD_MIN_SEVERITY: %w", err))
 	}
 
+	errs = append(errs, c.checkProbes()...)
+
 	if c.GameDSN == "" {
 		errs = append(errs, errors.New("ITEMWATCH_GAME_DSN is required"))
 	} else if c.GameDSN, err = normalizeDSN(c.GameDSN); err != nil {
@@ -152,6 +173,30 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ITEMWATCH_STATE_DSN: %w", err))
 	}
 	return c, errors.Join(errs...)
+}
+
+// checkProbes refuses a half configured probe: staying off in silence would
+// look like a healthy server.
+func (c Config) checkProbes() []error {
+	var errs []error
+	if c.ProbeStatusAddr != "" {
+		if _, _, err := net.SplitHostPort(c.ProbeStatusAddr); err != nil {
+			errs = append(errs, fmt.Errorf("ITEMWATCH_PROBE_STATUS_ADDR: must be host:port: %w", err))
+		}
+	}
+	set := 0
+	for _, v := range []string{c.ProbeLoginURL, c.ProbeLoginEmail, c.ProbeLoginPassword} {
+		if v != "" {
+			set++
+		}
+	}
+	if set > 0 && set < 3 {
+		errs = append(errs, errors.New("ITEMWATCH_PROBE_LOGIN_URL, _LOGIN_EMAIL and _LOGIN_PASSWORD go together"))
+	}
+	if u, err := url.Parse(c.ProbeLoginURL); set > 0 && (err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https")) {
+		errs = append(errs, errors.New("ITEMWATCH_PROBE_LOGIN_URL: must be an http or https URL"))
+	}
+	return errs
 }
 
 // normalizeDSN forces UTC time parsing, which the store relies on.

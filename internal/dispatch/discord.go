@@ -66,12 +66,16 @@ func (d *Discord) Payload(n queue.Notification) ([]byte, error) {
 	if n.Occurrences > 1 {
 		add("occurrences", fmt.Sprint(n.Occurrences))
 	}
+	footer := fmt.Sprintf("itemwatch #%d · %s", n.AlertID, n.Rule)
+	if n.AlertID == 0 { // delivered directly, no alert row behind it yet
+		footer = "itemwatch · " + n.Rule
+	}
 	embed := discordEmbed{
 		Title:     n.Title,
 		Color:     severityColor[sev],
 		Fields:    fields,
 		Timestamp: n.FirstSeen.UTC().Format(time.RFC3339),
-		Footer:    map[string]any{"text": fmt.Sprintf("itemwatch #%d · %s", n.AlertID, n.Rule)},
+		Footer:    map[string]any{"text": footer},
 	}
 	if n.Reopened() {
 		embed.Description = label("reopened")

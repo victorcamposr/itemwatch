@@ -36,6 +36,9 @@ services:
       ITEMWATCH_DUPE_CONFIRM_AFTER: 40s
       ITEMWATCH_SPIKE_WARMUP: "10"
       ITEMWATCH_DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      # Health checks. The other two need a real game server:
+      # ITEMWATCH_PROBE_STATUS_ADDR, ITEMWATCH_PROBE_LOGIN_URL (see the README).
+      ITEMWATCH_PROBE_DB_WRITE: "true"
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

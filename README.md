@@ -6,7 +6,8 @@ Real-time detection of item duplication and abnormal item creation for an online
 
 In an MMORPG, one duplication bug can flood the economy in hours: the copied items get traded, sold and mixed into
 legitimate stock before anyone notices. itemwatch tails the server's item ledger, flags what looks wrong, and announces
-each incident once to the staff, on Discord and through a REST API used by the team's admin panel.
+each incident once to the staff, on Discord and through a REST API used by the team's admin panel. It also keeps an
+eye on the game itself with synthetic checks, and says so when the server or its own database stops working.
 
 I built it for an [Open Tibia](https://github.com/opentibiabr/canary) server I develop. It runs next to the game in the
 same Docker Compose stack.
@@ -29,6 +30,7 @@ itemwatch only reads those tables. It never writes to the game database.
 | `spike` | An origin creating far more items than it normally does, across all players. Learns each origin's rate with an exponentially weighted mean and variance and alerts above `mean + k·σ`. Catches many accounts exploiting the same bug at once, which per-player limits miss. | warning |
 | `unhashed` | A tracked item that reached a save without a hash: some code path skipped the item factory. | warning |
 | `staff` | Items created by staff commands, grouped per command and hour, for the record. | info |
+| `probe` | A health check that kept failing past its grace period (see [Health checks](#health-checks)). | critical |
 
 ## Architecture
 
@@ -92,6 +94,35 @@ at the worst possible moment.
   The price is the dual write described above.
 - **Text rendered once.** Alert titles are rendered when the alert is stored (English or Brazilian Portuguese), so the
   API, Discord and the admin panel show the same words.
+
+## Health checks
+
+A process being up says little: a game can hold its port open with the game loop frozen, or look online while its
+database refuses every write. These checks exercise the real paths, each one off until configured.
+
+| Check | What it does | Proves |
+|---|---|---|
+| `ot-status` | Sends the Open Tibia status query over TCP and parses the `<tsqp>` reply, keeping uptime and players online. | the game loop answers, not just the port |
+| `http-login` | Signs in through the client's HTTP login with a dedicated account. Success is a `200` with `session` and no `errorCode`. | web service, database and account data work together |
+| `db-write` | Upserts a row in `probe_heartbeat`, in itemwatch's own schema. | the database accepts writes, not just reads |
+
+A check that fails is not an incident yet, because a planned restart fails all of them for a while. Only continuous
+failure for `ITEMWATCH_PROBE_FAIL_AFTER` raises a `probe` alert, through the same path as the rules: one row per check,
+deduplicated, published and delivered with the same guarantees. The first success resolves it with `resolved_by` set to
+`probe`, and failing again reopens it with a new generation.
+
+Two cases need more than that:
+
+- **The alert cannot be stored.** A database that refuses writes also refuses the alert saying so. The write is retried
+  on the next tick, then the alert goes straight to the notification channels, once, with no database and no Redis in
+  the way. Storing keeps being tried, and the row appears when the database is back, without a second announcement. If
+  the channels fail too, the failure stays in the error log and in `/v1/status`, and both are retried on every tick.
+- **There is no leader.** Checks run on the leader only, but the leader lock lives in the state database, so losing that
+  database leaves no leader at all. A replica that cannot reach the database runs the checks too, otherwise the worst
+  outage would be the quiet one. With several replicas, each one announces such an outage once.
+
+Point `ITEMWATCH_PROBE_LOGIN_*` at an account made for this, without two-factor authentication. Keep the interval above
+the server's `statusTimeout`: inside it the server drops a second query from the same address, and the check fails.
 
 ## REST API
 
@@ -165,6 +196,11 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | `ITEMWATCH_IGNORE_ORIGINS` | `world,change,bank,stash,market,...` | origins that move value instead of creating it |
 | `ITEMWATCH_DUPE_CONFIRM_AFTER` | `20m` | keep above the server's save interval |
 | `ITEMWATCH_SPIKE_K`, `_ALPHA`, `_MIN_COUNT`, `_WARMUP` | `4`, `0.05`, `50`, `30` | spike detector tuning |
+| `ITEMWATCH_PROBE_STATUS_ADDR` | | `host:port` of the status protocol; turns `ot-status` on |
+| `ITEMWATCH_PROBE_LOGIN_URL`, `_LOGIN_EMAIL`, `_LOGIN_PASSWORD` | | all three turn `http-login` on |
+| `ITEMWATCH_PROBE_DB_WRITE` | `false` | turns `db-write` on |
+| `ITEMWATCH_PROBE_INTERVAL` | `30s` | time between runs |
+| `ITEMWATCH_PROBE_FAIL_AFTER` | `5m` | continuous failure before alerting; keep above a planned restart |
 
 The database user needs `SELECT` on the ledger, item and `players` tables of the game schema and full rights on its own
 schema.
@@ -179,7 +215,8 @@ go test -tags integration ./internal/itest/     # real MariaDB and Redis through
 The integration suite checks the guarantees above against real services: a restart resumes from the checkpoint without
 new alerts, a resolved duplicate that is still there reopens with a new generation, a delivery that fails twice is
 retried and posted once, a republished message is not posted again, a permanent failure lands in the dead-letter
-stream, and a standby replica takes the leader lock when the leader stops.
+stream, a standby replica takes the leader lock when the leader stops, and a health check alert goes through open,
+resolved and reopened without being announced twice.
 
 ## Limits
 
@@ -187,6 +224,8 @@ stream, and a standby replica takes the leader lock when the leader stops.
   invisible to the duplicate scan. The `burst` and `spike` rules are the safety net for currency.
 - The duplicate scan reads the last saved state of each character. Items stored in houses are serialized in a blob per
   house and are not scanned.
+- itemwatch needs the state database to start. If it restarts during a database outage it exits and retries, and until
+  then nothing watches: keep an external uptime check on `/healthz`.
 
 ## License
 

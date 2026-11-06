@@ -27,8 +27,9 @@ func ParseLang(s string) Lang {
 }
 
 type catalog struct {
-	unhashed, staff, burst, spike, dupe string
-	labels                              map[string]string
+	unhashed, staff, burst, spike, dupe, probe string
+	probes                                     map[string]string
+	labels                                     map[string]string
 }
 
 var catalogs = map[Lang]catalog{
@@ -38,6 +39,12 @@ var catalogs = map[Lang]catalog{
 		burst:    "%v items from %s to one player in %s (limit %v)",
 		spike:    "Spike in %s: %v items in %s, usually %v",
 		dupe:     "Item %s is in %v places at once",
+		probe:    "Health check %s is failing",
+		probes: map[string]string{
+			"ot-status":  "The game server is not answering status requests",
+			"http-login": "The login test is failing, so players may be unable to log in",
+			"db-write":   "The state database is refusing writes",
+		},
 		labels: map[string]string{
 			"player": "Player", "origin": "Origin", "hash": "Hash", "occurrences": "Occurrences",
 			"severity": "Severity", "reopened": "Reopened after being resolved",
@@ -50,6 +57,12 @@ var catalogs = map[Lang]catalog{
 		burst:    "%v itens de %s para um jogador em %s (limite %v)",
 		spike:    "Pico em %s: %v itens em %s, o normal é %v",
 		dupe:     "Item %s está em %v lugares ao mesmo tempo",
+		probe:    "O teste de saúde %s está falhando",
+		probes: map[string]string{
+			"ot-status":  "O servidor do jogo não está respondendo ao pedido de status",
+			"http-login": "O teste de login está falhando, jogadores podem não conseguir entrar",
+			"db-write":   "O banco de estado está recusando escrita",
+		},
 		labels: map[string]string{
 			"player": "Jogador", "origin": "Origem", "hash": "Hash", "occurrences": "Ocorrências",
 			"severity": "Gravidade", "reopened": "Reaberto depois de resolvido",
@@ -72,6 +85,11 @@ func Title(lang Lang, f detect.Finding) string {
 		return fmt.Sprintf(c.spike, f.Origin, f.Facts["count"], f.Facts["bucket"], f.Facts["mean"])
 	case "dupe":
 		return fmt.Sprintf(c.dupe, f.ItemHash, f.Facts["places"])
+	case detect.ProbeRule:
+		if s, ok := c.probes[f.Origin]; ok {
+			return s
+		}
+		return fmt.Sprintf(c.probe, f.Origin)
 	}
 	return f.Rule
 }
