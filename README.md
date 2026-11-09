@@ -27,7 +27,7 @@ itemwatch only reads those tables. It never writes to the game database.
 |---|---|---|
 | `dupe` | The same hash held in two places at once (two characters, or inventory and depot). Confirmed only after it survives every scan for longer than the server's save interval, because a freshly traded item briefly shows under both owners until the old one saves. | critical |
 | `burst` | One player receiving too many items from one origin in a sliding window, with per-origin limits such as `quest:=3/24h` or `loot:=1500/10m`. Catches a quest reward paid twice or a script stuck in a loop. | warning |
-| `spike` | An origin creating far more items than it normally does, across all players. Learns each origin's rate with an exponentially weighted mean and variance and alerts above `mean + k·σ`. Catches many accounts exploiting the same bug at once, which per-player limits miss. | warning |
+| `spike` | An origin creating far more items than it normally does, across all players. Learns each origin's rate with an exponentially weighted mean and variance and alerts above `mean + k·σ`, once at least three distinct players share the bucket (one hunter clearing a pack is the `burst` rule's business). Items with no player at all always count. Catches many accounts exploiting the same bug at once, which per-player limits miss. | warning |
 | `unhashed` | A tracked item that reached a save without a hash: some code path skipped the item factory. | warning |
 | `staff` | Items created by staff commands, grouped per command and hour, for the record. | info |
 | `probe` | A health check that kept failing past its grace period (see [Health checks](#health-checks)). | critical |
@@ -227,8 +227,9 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | `ITEMWATCH_START` | `latest` | with no checkpoint, start at the end of the ledger, or `earliest` to replay it |
 | `ITEMWATCH_BURST_LIMITS` | see config | `pattern=max/window`, most specific pattern wins |
 | `ITEMWATCH_IGNORE_ORIGINS` | `world,change,bank,stash,market,...` | origins that move value instead of creating it |
+| `ITEMWATCH_STAFF_RULE` | `true` | `false` turns off the `staff` record, for servers that keep their own log of staff commands |
 | `ITEMWATCH_DUPE_CONFIRM_AFTER` | `20m` | keep above the server's save interval |
-| `ITEMWATCH_SPIKE_K`, `_ALPHA`, `_MIN_COUNT`, `_WARMUP` | `4`, `0.05`, `50`, `30` | spike detector tuning |
+| `ITEMWATCH_SPIKE_K`, `_ALPHA`, `_MIN_COUNT`, `_MIN_PLAYERS`, `_WARMUP` | `4`, `0.05`, `50`, `3`, `30` | spike detector tuning |
 | `ITEMWATCH_PROBE_STATUS_ADDR` | | `host:port` of the status protocol; turns `ot-status` on |
 | `ITEMWATCH_PROBE_LOGIN_URL`, `_LOGIN_EMAIL`, `_LOGIN_PASSWORD` | | all three turn `http-login` on |
 | `ITEMWATCH_PROBE_DB_WRITE` | `false` | turns `db-write` on |

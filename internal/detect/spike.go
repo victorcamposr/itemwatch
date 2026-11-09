@@ -16,14 +16,19 @@ type SpikeConfig struct {
 	K         float64       // alert above mean + K standard deviations
 	MinCount  int           // and never below this many items per bucket
 	MinFactor float64       // and never below MinFactor times the mean
-	Warmup    int           // buckets to learn before alerting
-	Ignore    Patterns
+	// MinPlayers is how many distinct players must share the bucket. A spike
+	// caused by one player is the burst rule's job (one hunter clearing a
+	// pack looks like a spike of that monster's loot); items with no player
+	// at all (player id 0) always count, since nobody can be blamed for them.
+	MinPlayers int
+	Warmup     int // buckets to learn before alerting
+	Ignore     Patterns
 }
 
 // DefaultSpikeConfig is tuned for a server where a busy origin produces tens
 // of items per minute.
 func DefaultSpikeConfig() SpikeConfig {
-	return SpikeConfig{Bucket: time.Minute, Alpha: 0.05, K: 4, MinCount: 50, MinFactor: 3, Warmup: 30}
+	return SpikeConfig{Bucket: time.Minute, Alpha: 0.05, K: 4, MinCount: 50, MinFactor: 3, MinPlayers: 3, Warmup: 30}
 }
 
 // maxGapBuckets bounds the zero buckets folded in after an origin goes quiet.
@@ -69,6 +74,10 @@ type originRate struct {
 	Var     float64 `json:"var"`
 	N       int     `json:"n"`
 	Alerted bool    `json:"alerted"`
+	// Players seen in the current bucket, capped at MinPlayers, and whether
+	// any item came without a player.
+	Players      []int64 `json:"players,omitempty"`
+	Unattributed bool    `json:"unattributed,omitempty"`
 }
 
 // NewSpike builds the rule; zero fields of cfg take the defaults.
@@ -91,6 +100,9 @@ func NewSpike(cfg SpikeConfig) *Spike {
 	}
 	if cfg.Warmup <= 0 {
 		cfg.Warmup = def.Warmup
+	}
+	if cfg.MinPlayers <= 0 {
+		cfg.MinPlayers = def.MinPlayers
 	}
 	return &Spike{cfg: cfg, state: spikeState{Origins: map[string]*originRate{}}}
 }
@@ -128,8 +140,12 @@ func (s *Spike) Observe(ev ledger.Event) []Finding {
 		s.roll(r, bucket)
 	}
 	r.Count++
+	r.notePlayer(ev.PlayerID, s.cfg.MinPlayers)
 
 	if r.Alerted || r.N < s.cfg.Warmup || r.Count < s.cfg.MinCount {
+		return nil
+	}
+	if !r.Unattributed && len(r.Players) < s.cfg.MinPlayers {
 		return nil
 	}
 	count := float64(r.Count)
@@ -146,10 +162,11 @@ func (s *Spike) Observe(ev ledger.Event) []Finding {
 		Count:    1,
 		Origin:   origin,
 		Facts: map[string]any{
-			"count":  r.Count,
-			"mean":   round2(r.Mean),
-			"stddev": round2(std),
-			"bucket": FormatDuration(s.cfg.Bucket),
+			"count":   r.Count,
+			"mean":    round2(r.Mean),
+			"stddev":  round2(std),
+			"bucket":  FormatDuration(s.cfg.Bucket),
+			"players": r.playersFact(),
 		},
 	}}
 }
@@ -169,6 +186,33 @@ func (s *Spike) roll(r *originRate, next int64) {
 		s.fold(r, 0)
 	}
 	r.Bucket, r.Count, r.Alerted = next, 0, false
+	r.Players, r.Unattributed = nil, false
+}
+
+// notePlayer remembers who received items in the current bucket, up to limit.
+func (r *originRate) notePlayer(id int64, limit int) {
+	if id == 0 {
+		r.Unattributed = true
+		return
+	}
+	if len(r.Players) >= limit {
+		return
+	}
+	for _, seen := range r.Players {
+		if seen == id {
+			return
+		}
+	}
+	r.Players = append(r.Players, id)
+}
+
+// playersFact is the number of distinct players in the bucket as stored in
+// the alert: 0 means the items had no player.
+func (r *originRate) playersFact() int {
+	if r.Unattributed && len(r.Players) == 0 {
+		return 0
+	}
+	return len(r.Players)
 }
 
 // fold adds one observation to the exponentially weighted mean and variance.

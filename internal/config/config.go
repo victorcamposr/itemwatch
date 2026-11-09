@@ -138,13 +138,14 @@ func Load() (Config, error) {
 		ProbeFailAfter:     duration("PROBE_FAIL_AFTER", "5m"),
 	}
 	c.Spike = detect.SpikeConfig{
-		Bucket:    duration("SPIKE_BUCKET", "1m"),
-		Alpha:     float("SPIKE_ALPHA", 0.05),
-		K:         float("SPIKE_K", 4),
-		MinCount:  integer("SPIKE_MIN_COUNT", 50),
-		MinFactor: float("SPIKE_MIN_FACTOR", 3),
-		Warmup:    integer("SPIKE_WARMUP", 30),
-		Ignore:    append(detect.Patterns{"gm:"}, c.Ignore...),
+		Bucket:     duration("SPIKE_BUCKET", "1m"),
+		Alpha:      float("SPIKE_ALPHA", 0.05),
+		K:          float("SPIKE_K", 4),
+		MinCount:   integer("SPIKE_MIN_COUNT", 50),
+		MinFactor:  float("SPIKE_MIN_FACTOR", 3),
+		MinPlayers: integer("SPIKE_MIN_PLAYERS", 3),
+		Warmup:     integer("SPIKE_WARMUP", 30),
+		Ignore:     append(detect.Patterns{"gm:"}, c.Ignore...),
 	}
 	if c.Spike.Bucket < time.Second {
 		errs = append(errs, errors.New("ITEMWATCH_SPIKE_BUCKET: at least 1s"))

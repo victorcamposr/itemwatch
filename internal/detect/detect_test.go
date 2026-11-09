@@ -153,14 +153,52 @@ func TestSpikeLearnsBaselineThenFlags(t *testing.T) {
 	}
 	// Minute 30: 100 items.
 	var findings []Finding
-	for range 100 {
-		findings = append(findings, s.Observe(birth("loot:Dragon", 1, at.Add(30*time.Minute)))...)
+	for i := range 100 {
+		findings = append(findings, s.Observe(birth("loot:Dragon", int64(i%4)+1, at.Add(30*time.Minute)))...)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want exactly 1 per bucket", len(findings))
 	}
 	if findings[0].Facts["count"].(int) < 20 {
 		t.Fatalf("alerted before MinCount: %+v", findings[0].Facts)
+	}
+}
+
+func TestSpikeNeedsSeveralPlayers(t *testing.T) {
+	s := NewSpike(SpikeConfig{Bucket: time.Minute, Alpha: 0.1, K: 4, MinCount: 20, MinFactor: 3, MinPlayers: 3, Warmup: 10})
+	minute := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	for m := range 30 {
+		for i := range 5 {
+			s.Observe(birth("loot:Dragon", int64(i%3)+1, minute(m)))
+		}
+	}
+	// One hunter clearing a big pack: a spike of the origin, but one player.
+	for range 200 {
+		if f := s.Observe(birth("loot:Dragon", 7, minute(30))); len(f) != 0 {
+			t.Fatal("one player's loot flagged as an origin spike")
+		}
+	}
+	// A second player joins in: still below MinPlayers.
+	if f := s.Observe(birth("loot:Dragon", 8, minute(30))); len(f) != 0 {
+		t.Fatal("two players flagged with MinPlayers 3")
+	}
+	// The third distinct player makes it a spike across accounts.
+	f := s.Observe(birth("loot:Dragon", 9, minute(30)))
+	if len(f) != 1 || f[0].Facts["players"].(int) != 3 {
+		t.Fatalf("want one finding with 3 players, got %+v", f)
+	}
+	// Items with no player at all are never excused.
+	for m := 31; m < 60; m++ {
+		for i := range 5 {
+			s.Observe(birth("script", int64(i%3)+1, minute(m)))
+		}
+	}
+	var anon []Finding
+	for range 200 {
+		anon = append(anon, s.Observe(birth("script", 0, minute(60)))...)
+	}
+	if len(anon) != 1 || anon[0].Facts["players"].(int) != 0 {
+		t.Fatalf("want one finding for unattributed items, got %+v", anon)
 	}
 }
 
