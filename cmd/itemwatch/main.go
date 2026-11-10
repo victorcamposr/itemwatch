@@ -200,7 +200,8 @@ func probeChecks(cfg config.Config, st *store.Store) []probe.Check {
 	if cfg.ProbeLoginURL != "" {
 		checks = append(checks, probe.HTTPLogin{
 			URL: cfg.ProbeLoginURL, Email: cfg.ProbeLoginEmail, Password: cfg.ProbeLoginPassword,
-			Client: probe.NewLoginClient(),
+			PackageFile: cfg.ProbeLoginPackage,
+			Client:      probe.NewLoginClient(),
 		})
 	}
 	if cfg.ProbeDBWrite {

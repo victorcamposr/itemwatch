@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +158,35 @@ func runLogin(t *testing.T, handler http.HandlerFunc) error {
 	defer cancel()
 	_, err := HTTPLogin{URL: srv.URL, Email: "probe@example.com", Password: "secret"}.Run(ctx)
 	return err
+}
+
+func TestHTTPLoginSendsThePackageHash(t *testing.T) {
+	pkg := filepath.Join(t.TempDir(), "package.sig")
+	if err := os.WriteFile(pkg, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["clientpackage"] != want {
+			t.Errorf("clientpackage %v", body["clientpackage"])
+		}
+		fmt.Fprint(w, `{"session":{"sessionkey":"x"}}`)
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	login := HTTPLogin{URL: srv.URL, Email: "a", Password: "b", PackageFile: pkg}
+	if _, err := login.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	login.PackageFile = filepath.Join(t.TempDir(), "missing.sig")
+	if _, err := login.Run(ctx); err == nil || !strings.Contains(err.Error(), "client package") {
+		t.Fatalf("missing package file: %v", err)
+	}
 }
 
 func TestHTTPLoginSendsTheClientFormat(t *testing.T) {

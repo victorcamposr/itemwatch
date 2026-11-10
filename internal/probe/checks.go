@@ -3,6 +3,8 @@ package probe
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -11,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -110,11 +113,17 @@ func parseStatus(reply []byte) (map[string]any, error) {
 // format. It proves the whole login path: web service, database and account
 // data. The login servers answer errors with HTTP 200 and an errorCode, so the
 // body decides. Use a dedicated account without two-factor authentication.
+//
+// Servers that only let the current client in compare a hash of the published
+// client package with what the client sends. PackageFile, when set, points at
+// that package file: its SHA-256 goes along as "clientpackage", like the real
+// client does, so a new release does not lock the check out.
 type HTTPLogin struct {
-	URL      string
-	Email    string
-	Password string
-	Client   *http.Client
+	URL         string
+	Email       string
+	Password    string
+	PackageFile string
+	Client      *http.Client
 }
 
 // Name implements Check.
@@ -135,9 +144,17 @@ func NewLoginClient() *http.Client {
 
 // Run implements Check.
 func (c HTTPLogin) Run(ctx context.Context) (map[string]any, error) {
-	body, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"type": "login", "email": c.Email, "password": c.Password, "stayloggedin": true,
-	})
+	}
+	if c.PackageFile != "" {
+		sum, err := fileSHA256(c.PackageFile)
+		if err != nil {
+			return nil, fmt.Errorf("client package: %w", err)
+		}
+		fields["clientpackage"] = sum
+	}
+	body, err := json.Marshal(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +192,20 @@ func (c HTTPLogin) Run(ctx context.Context) (map[string]any, error) {
 		return nil, errors.New("login reply has no session")
 	}
 	return nil, nil
+}
+
+// fileSHA256 hashes a file in hex, the way the login compares it.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // plainURLError drops the URL from a client error: this text ends up in the

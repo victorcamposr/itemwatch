@@ -50,6 +50,7 @@ type Config struct {
 	ProbeLoginURL      string
 	ProbeLoginEmail    string
 	ProbeLoginPassword string
+	ProbeLoginPackage  string
 	ProbeDBWrite       bool
 	ProbeInterval      time.Duration
 	ProbeFailAfter     time.Duration
@@ -133,6 +134,7 @@ func Load() (Config, error) {
 		ProbeLoginURL:      get("PROBE_LOGIN_URL", ""),
 		ProbeLoginEmail:    get("PROBE_LOGIN_EMAIL", ""),
 		ProbeLoginPassword: get("PROBE_LOGIN_PASSWORD", ""),
+		ProbeLoginPackage:  get("PROBE_LOGIN_PACKAGE_FILE", ""),
 		ProbeDBWrite:       boolean("PROBE_DB_WRITE", false),
 		ProbeInterval:      duration("PROBE_INTERVAL", "30s"),
 		ProbeFailAfter:     duration("PROBE_FAIL_AFTER", "5m"),
@@ -196,6 +198,9 @@ func (c Config) checkProbes() []error {
 	}
 	if u, err := url.Parse(c.ProbeLoginURL); set > 0 && (err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https")) {
 		errs = append(errs, errors.New("ITEMWATCH_PROBE_LOGIN_URL: must be an http or https URL"))
+	}
+	if c.ProbeLoginPackage != "" && set == 0 {
+		errs = append(errs, errors.New("ITEMWATCH_PROBE_LOGIN_PACKAGE_FILE: needs the http-login check configured"))
 	}
 	return errs
 }

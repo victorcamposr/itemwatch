@@ -121,7 +121,9 @@ Two cases need more than that:
   database leaves no leader at all. A replica that cannot reach the database runs the checks too, otherwise the worst
   outage would be the quiet one. With several replicas, each one announces such an outage once.
 
-Point `ITEMWATCH_PROBE_LOGIN_*` at an account made for this, without two-factor authentication. Keep the interval above
+Point `ITEMWATCH_PROBE_LOGIN_*` at an account made for this, without two-factor authentication. If the login only lets
+the current client in by comparing a hash of the published package, mount that file read-only and point
+`ITEMWATCH_PROBE_LOGIN_PACKAGE_FILE` at it: its SHA-256 goes along as `clientpackage`. Keep the interval above
 the server's `statusTimeout`: inside it the server drops a second query from the same address, and the check fails.
 
 ## REST API
@@ -232,6 +234,7 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | `ITEMWATCH_SPIKE_K`, `_ALPHA`, `_MIN_COUNT`, `_MIN_PLAYERS`, `_WARMUP` | `4`, `0.05`, `50`, `3`, `30` | spike detector tuning |
 | `ITEMWATCH_PROBE_STATUS_ADDR` | | `host:port` of the status protocol; turns `ot-status` on |
 | `ITEMWATCH_PROBE_LOGIN_URL`, `_LOGIN_EMAIL`, `_LOGIN_PASSWORD` | | all three turn `http-login` on |
+| `ITEMWATCH_PROBE_LOGIN_PACKAGE_FILE` | | file whose SHA-256 `http-login` sends as `clientpackage` |
 | `ITEMWATCH_PROBE_DB_WRITE` | `false` | turns `db-write` on |
 | `ITEMWATCH_PROBE_INTERVAL` | `30s` | time between runs |
 | `ITEMWATCH_PROBE_FAIL_AFTER` | `5m` | continuous failure before alerting; keep above a planned restart |
