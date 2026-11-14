@@ -112,6 +112,18 @@ func (r *Reader) MaxID(ctx context.Context) (uint64, error) {
 	return id, nil
 }
 
+// LastIDBefore returns the newest ledger id created strictly before t, or 0
+// when there is none. The watcher uses it to find where to resume after the
+// ledger was rebuilt with lower ids than the ones it had already read.
+func (r *Reader) LastIDBefore(ctx context.Context, t time.Time) (uint64, error) {
+	var id uint64
+	err := r.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(`id`), 0) FROM `"+r.table+"` WHERE `created_at` < ?", t.Unix()).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ledger last id before: %w", err)
+	}
+	return id, nil
+}
+
 // Duplicates lists hashes found in more than one place, as of the last time
 // the game server saved each holder.
 func (r *Reader) Duplicates(ctx context.Context, limit int) ([]Duplicate, error) {

@@ -41,6 +41,11 @@ type Config struct {
 	Ignore      detect.Patterns
 	Spike       detect.SpikeConfig
 	StaffRule   bool
+	// Once lists origins that give a character items a single time (a starter
+	// kit). They leave the spike rule, where a wave of new characters looks like
+	// an exploit, and the repeat rule watches them instead. Burst still caps them.
+	Once       detect.Patterns
+	OnceWindow time.Duration
 
 	DiscordWebhook string
 	DiscordMin     detect.Severity
@@ -124,6 +129,8 @@ func Load() (Config, error) {
 		DupeConfirm:    duration("DUPE_CONFIRM_AFTER", "20m"),
 		Ignore:         detect.ParsePatterns(get("IGNORE_ORIGINS", DefaultIgnore)),
 		StaffRule:      boolean("STAFF_RULE", true),
+		Once:           detect.ParsePatterns(get("ONCE_ORIGINS", "")),
+		OnceWindow:     duration("ONCE_WINDOW", "10m"),
 		DiscordWebhook: get("DISCORD_WEBHOOK_URL", ""),
 		Stream:         get("STREAM", "itemwatch:alerts"),
 		DeadLetter:     get("DEAD_LETTER_STREAM", "itemwatch:alerts:dead"),
@@ -147,7 +154,7 @@ func Load() (Config, error) {
 		MinFactor:  float("SPIKE_MIN_FACTOR", 3),
 		MinPlayers: integer("SPIKE_MIN_PLAYERS", 3),
 		Warmup:     integer("SPIKE_WARMUP", 30),
-		Ignore:     append(detect.Patterns{"gm:"}, c.Ignore...),
+		Ignore:     append(append(detect.Patterns{"gm:"}, c.Ignore...), c.Once...),
 	}
 	if c.Spike.Bucket < time.Second {
 		errs = append(errs, errors.New("ITEMWATCH_SPIKE_BUCKET: at least 1s"))

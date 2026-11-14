@@ -29,7 +29,9 @@ itemwatch only reads those tables. It never writes to the game database.
 | `burst` | One player receiving too many items from one origin in a sliding window, with per-origin limits such as `quest:=3/24h` or `loot:=1500/10m`. Catches a quest reward paid twice or a script stuck in a loop. | warning |
 | `spike` | An origin creating far more items than it normally does, across all players. Learns each origin's rate with an exponentially weighted mean and variance and alerts above `mean + k·σ`, once at least three distinct players share the bucket (one hunter clearing a pack is the `burst` rule's business). Items with no player at all always count. Catches many accounts exploiting the same bug at once, which per-player limits miss. | warning |
 | `unhashed` | A tracked item that reached a save without a hash: some code path skipped the item factory. | warning |
+| `repeat` | An origin that should give a character items a single time (a starter kit, listed in `ITEMWATCH_ONCE_ORIGINS`) giving the same player items again after the first delivery window. These origins leave the `spike` rule: a wave of new characters is not an exploit. | warning |
 | `staff` | Items created by staff commands, grouped per command and hour, for the record. | info |
+| `ledger` | The ledger ids went back below the cursor (the table was rebuilt or emptied). The watcher resumes from the last row created before its checkpoint, so new rows are not skipped. | warning |
 | `probe` | A health check that kept failing past its grace period (see [Health checks](#health-checks)). | critical |
 
 ## Architecture
@@ -87,6 +89,9 @@ at the worst possible moment.
 
 - **Polling by id instead of binlog CDC.** The ledger is append-only with an auto-increment key and a single writer, so
   `WHERE id > ? ORDER BY id LIMIT n` is cheap, simple to reason about and needs no extra privileges on the database.
+  The one way this breaks is a table rebuilt with lower ids: every new row would sit below the cursor, unread, while the
+  lag still reads zero. Every 15 s the watcher compares the newest id with the cursor; when it is lower, it moves the
+  cursor back to the last row created before the checkpoint and raises a `ledger` alert in the same commit.
 - **Bounded memory.** Sliding windows are approximated with 20 sub-buckets per window, so state does not grow with
   traffic, and quiet keys are pruned on every checkpoint.
 - **Redis Streams over a database outbox table.** Consumer groups, the pending entries list and `XCLAIM` give retries and
@@ -229,6 +234,8 @@ Everything is set through environment variables; see [`.env.example`](.env.examp
 | `ITEMWATCH_START` | `latest` | with no checkpoint, start at the end of the ledger, or `earliest` to replay it |
 | `ITEMWATCH_BURST_LIMITS` | see config | `pattern=max/window`, most specific pattern wins |
 | `ITEMWATCH_IGNORE_ORIGINS` | `world,change,bank,stash,market,...` | origins that move value instead of creating it |
+| `ITEMWATCH_ONCE_ORIGINS` | empty | origins that give a character items once (`starter:*`): out of `spike`, watched by `repeat` |
+| `ITEMWATCH_ONCE_WINDOW` | `10m` | how long one delivery of those origins may take before a new one counts as a repeat |
 | `ITEMWATCH_STAFF_RULE` | `true` | `false` turns off the `staff` record, for servers that keep their own log of staff commands |
 | `ITEMWATCH_DUPE_CONFIRM_AFTER` | `20m` | keep above the server's save interval |
 | `ITEMWATCH_SPIKE_K`, `_ALPHA`, `_MIN_COUNT`, `_MIN_PLAYERS`, `_WARMUP` | `4`, `0.05`, `50`, `3`, `30` | spike detector tuning |

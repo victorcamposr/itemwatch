@@ -95,6 +95,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if cfg.StaffRule {
 		rules = append(rules, detect.StaffCreation{})
 	}
+	if len(cfg.Once) > 0 {
+		rules = append(rules, detect.NewOnce(cfg.Once, cfg.OnceWindow))
+	}
 	var notifiers []dispatch.Notifier
 	if cfg.DiscordWebhook != "" {
 		notifiers = append(notifiers, &dispatch.Discord{URL: cfg.DiscordWebhook, Min: cfg.DiscordMin, Lang: cfg.Lang})

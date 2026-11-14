@@ -30,6 +30,7 @@ const CheckpointName = "ledger"
 type Ledger interface {
 	After(ctx context.Context, after uint64, limit int) ([]ledger.Event, error)
 	MaxID(ctx context.Context) (uint64, error)
+	LastIDBefore(ctx context.Context, t time.Time) (uint64, error)
 	Duplicates(ctx context.Context, limit int) ([]ledger.Duplicate, error)
 	PlayerNames(ctx context.Context, ids []int64) (map[int64]string, error)
 }
@@ -98,6 +99,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if cursor, err = w.FollowReset(ctx, cursor); err != nil {
+		return err
+	}
 	w.Log.Info("watching ledger", "cursor", cursor, "rules", len(w.Rules))
 
 	g, ctx := errgroup.WithContext(ctx)
@@ -163,6 +167,14 @@ func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
 		case <-lagTick.C:
 			if max, err := w.Ledger.MaxID(ctx); err == nil && max >= cursor {
 				w.Metrics.CursorLag.Set(float64(max - cursor))
+			} else if err == nil {
+				next, err := w.FollowReset(ctx, cursor)
+				if err != nil {
+					w.Log.Error("ledger reset check failed", "cursor", cursor, "err", err)
+				} else {
+					cursor = next
+					w.cursor.Store(cursor)
+				}
 			}
 		default:
 		}
@@ -193,6 +205,54 @@ func (w *Watcher) tail(ctx context.Context, cursor uint64) error {
 		}
 	}
 	return nil
+}
+
+// resetMargin is how far before the last checkpoint FollowReset resumes. The
+// checkpoint is written right after its batch, so rows a few seconds older are
+// already counted; reading them again costs less than skipping new ones.
+const resetMargin = 5 * time.Second
+
+// FollowReset handles a ledger whose newest id is below the cursor. That only
+// happens when the table was rebuilt or emptied and its ids started over
+// lower: every new row would then stay below the cursor and never be read,
+// while the lag still reads zero. It moves the cursor back to the last row
+// created before the checkpoint and stores a warning alert in the same
+// commit, so the team knows the history was cut. It returns the cursor to
+// use, unchanged when the ledger is fine.
+func (w *Watcher) FollowReset(ctx context.Context, cursor uint64) (uint64, error) {
+	head, err := w.Ledger.MaxID(ctx)
+	if err != nil || head >= cursor {
+		return cursor, err
+	}
+	cp, ok, err := w.Store.LoadCheckpoint(ctx, CheckpointName)
+	if err != nil || !ok {
+		return cursor, err
+	}
+	target, err := w.Ledger.LastIDBefore(ctx, cp.UpdatedAt.Add(-resetMargin))
+	if err != nil {
+		return cursor, err
+	}
+	target = min(target, head)
+	now := time.Now().UTC()
+	finding := detect.Finding{
+		Rule:     detect.LedgerResetRule,
+		Severity: detect.Warning,
+		Key:      detect.LedgerResetKey(cursor),
+		At:       now,
+		Count:    1,
+		Origin:   "ledger",
+		Facts:    map[string]any{"cursor": cursor, "head": head, "resume_from": target, "checkpoint_at": cp.UpdatedAt.UTC().Format(time.RFC3339)},
+	}
+	alerts, err := w.toAlerts(ctx, []detect.Finding{finding})
+	if err != nil {
+		return cursor, err
+	}
+	if err := w.Store.Commit(ctx, CheckpointName, &store.Checkpoint{Cursor: target, RuleState: cp.RuleState}, alerts); err != nil {
+		return cursor, err
+	}
+	w.Log.Warn("ledger ids went back: resuming below the old cursor", "cursor", cursor, "head", head, "resume_from", target)
+	w.PublishPending(ctx)
+	return target, nil
 }
 
 // rewind restores the checkpoint, waiting for as long as the state database

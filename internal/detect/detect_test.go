@@ -302,3 +302,37 @@ func TestStaffCreation(t *testing.T) {
 }
 
 const DefaultIgnoreForTest = "world,change,bank,stash,market,market:*"
+
+func TestOnceFlagsASecondDelivery(t *testing.T) {
+	r := NewOnce(ParsePatterns("starter:*"), 10*time.Minute)
+	// The kit itself: many items in the first minutes.
+	for i := range 40 {
+		if got := r.Observe(birth("starter:items", 7, t0.Add(time.Duration(i)*time.Second))); len(got) != 0 {
+			t.Fatalf("first kit flagged: %+v", got)
+		}
+	}
+	// Other players and other origins are not affected.
+	if got := r.Observe(birth("starter:items", 8, t0.Add(time.Hour))); len(got) != 0 {
+		t.Fatalf("another player flagged: %+v", got)
+	}
+	if got := r.Observe(birth("loot:Dragon", 7, t0.Add(time.Hour))); len(got) != 0 {
+		t.Fatalf("other origin flagged: %+v", got)
+	}
+	got := r.Observe(birth("starter:items", 7, t0.Add(time.Hour)))
+	if len(got) != 1 || got[0].Rule != "repeat" || got[0].PlayerID != 7 {
+		t.Fatalf("second kit not flagged: %+v", got)
+	}
+
+	// The first delivery survives a restart.
+	raw, err := r.SaveState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := NewOnce(ParsePatterns("starter:*"), 10*time.Minute)
+	if err := r2.LoadState(raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := r2.Observe(birth("starter:items", 8, t0.Add(2*time.Hour))); len(got) != 1 {
+		t.Fatalf("restored state lost the first delivery: %+v", got)
+	}
+}

@@ -27,7 +27,7 @@ func ParseLang(s string) Lang {
 }
 
 type catalog struct {
-	unhashed, staff, burst, spike, dupe, probe string
+	unhashed, staff, burst, spike, dupe, probe, repeat, ledger string
 	probes                                     map[string]string
 	labels                                     map[string]string
 }
@@ -40,6 +40,8 @@ var catalogs = map[Lang]catalog{
 		spike:    "Spike in %s: %v items in %s, usually %v",
 		dupe:     "Item %s is in %v places at once",
 		probe:    "Health check %s is failing",
+		repeat:   "%s gave items to the same player again (first time at %v)",
+		ledger:   "The item ledger went back: newest id %v is below the cursor %v, reading again from id %v",
 		probes: map[string]string{
 			"ot-status":  "The game server is not answering status requests",
 			"http-login": "The login test is failing, so players may be unable to log in",
@@ -58,6 +60,8 @@ var catalogs = map[Lang]catalog{
 		spike:    "Pico em %s: %v itens em %s, o normal é %v",
 		dupe:     "Item %s está em %v lugares ao mesmo tempo",
 		probe:    "O teste de saúde %s está falhando",
+		repeat:   "%s entregou itens de novo ao mesmo jogador (a primeira vez foi em %v)",
+		ledger:   "O registro de itens voltou atrás: o último id %v está abaixo do cursor %v, lendo de novo a partir do id %v",
 		probes: map[string]string{
 			"ot-status":  "O servidor do jogo não está respondendo ao pedido de status",
 			"http-login": "O teste de login está falhando, jogadores podem não conseguir entrar",
@@ -85,6 +89,10 @@ func Title(lang Lang, f detect.Finding) string {
 		return fmt.Sprintf(c.spike, f.Origin, f.Facts["count"], f.Facts["bucket"], f.Facts["mean"])
 	case "dupe":
 		return fmt.Sprintf(c.dupe, f.ItemHash, f.Facts["places"])
+	case "repeat":
+		return fmt.Sprintf(c.repeat, f.Origin, f.Facts["first_at"])
+	case detect.LedgerResetRule:
+		return fmt.Sprintf(c.ledger, f.Facts["head"], f.Facts["cursor"], f.Facts["resume_from"])
 	case detect.ProbeRule:
 		if s, ok := c.probes[f.Origin]; ok {
 			return s

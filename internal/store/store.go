@@ -86,12 +86,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 type Checkpoint struct {
 	Cursor    uint64
 	RuleState map[string]json.RawMessage
+	// UpdatedAt is when the checkpoint was last written. Filled on load only.
+	UpdatedAt time.Time
 }
 
 // LoadCheckpoint returns the named checkpoint, or ok=false if none exists.
 func (s *Store) LoadCheckpoint(ctx context.Context, name string) (cp Checkpoint, ok bool, err error) {
 	var raw string
-	err = s.db.QueryRowContext(ctx, "SELECT cursor_id, rule_state FROM checkpoints WHERE name = ?", name).Scan(&cp.Cursor, &raw)
+	err = s.db.QueryRowContext(ctx, "SELECT cursor_id, rule_state, updated_at FROM checkpoints WHERE name = ?", name).Scan(&cp.Cursor, &raw, &cp.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cp, false, nil
 	}

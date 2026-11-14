@@ -510,3 +510,46 @@ func keys(m map[string]store.Alert) []string {
 	}
 	return out
 }
+
+// A ledger rebuilt with lower ids leaves every new row below the cursor. The
+// watcher must notice, resume from the last row before its checkpoint and say so.
+func TestLedgerResetResumesBelowTheCursor(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	old := time.Now().UTC().Add(-time.Hour)
+
+	exec(t, gameDB, "INSERT INTO players (id, name) VALUES (1, 'Knight')")
+	exec(t, gameDB, "ALTER TABLE item_hash_log AUTO_INCREMENT = 1000")
+	logRow(t, "0000000000000001", "birth", "loot:Rat", 1, old)
+	w := f.newWatcher(t)
+	cursor, n, err := w.Step(ctx, 0)
+	if err != nil || n != 1 || cursor < 1000 {
+		t.Fatalf("step: cursor=%d n=%d err=%v", cursor, n, err)
+	}
+
+	// The table is rebuilt: the old row stays, its ids start over low.
+	exec(t, gameDB, "DELETE FROM item_hash_log")
+	exec(t, gameDB, "ALTER TABLE item_hash_log AUTO_INCREMENT = 1")
+	logRow(t, "0000000000000002", "birth", "loot:Rat", 1, old)
+	time.Sleep(10 * time.Millisecond)
+	logRow(t, "0000000000000003", "birth", "loot:Rat", 1, time.Now().UTC().Add(time.Minute))
+
+	next, err := w.FollowReset(ctx, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next >= cursor {
+		t.Fatalf("cursor not moved back: %d", next)
+	}
+	events, err := f.reader.After(ctx, next, 10)
+	if err != nil || len(events) != 1 || events[0].Hash != "0000000000000003" {
+		t.Fatalf("resume reads %+v (err %v), want only the new row", events, err)
+	}
+	if _, ok := alertsByRule(t, f.store)[detect.LedgerResetRule]; !ok {
+		t.Fatal("no ledger reset alert")
+	}
+	// A healthy ledger is left alone.
+	if again, err := w.FollowReset(ctx, next); err != nil || again != next {
+		t.Fatalf("second call moved the cursor: %d err=%v", again, err)
+	}
+}
